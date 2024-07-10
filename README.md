@@ -91,14 +91,9 @@ createuser bitcoin-indexer
 createdb bitcoin-indexer bitcoin-indexer
 ```
 
-### `.env` file
+### Setup `.env` file
 
-Setup `.env` file with Postgresql and Bitcoin Core connection data. Example:
-
-```
-DATABASE_URL=postgres://bitcoin-indexer:bitcoin-indexer@localhost/bitcoin-indexer
-NODE_RPC_URL=http://someuser:somepassword@localhost:18443
-```
+You can use the  **.env.example** file as a reference.
 
 #### Optimize DB performance for massive amount of inserts!
 
