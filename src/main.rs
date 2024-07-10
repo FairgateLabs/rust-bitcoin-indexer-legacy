@@ -1,11 +1,18 @@
 #![allow(unused)] // need some cleanup
 
 use bitcoin_indexer::{
-    db, node::prefetcher, opts, prelude::*, types::*, util::BottleCheck, RpcInfo,
+    db,
+    node::prefetcher,
+    opts::{self, Config},
+    prelude::*,
+    types::*,
+    util::BottleCheck,
+    RpcInfo,
 };
 use bitcoincore_rpc::RpcApi;
 use log::info;
 use std::{env, sync::Arc};
+use structopt::StructOpt;
 
 use common_failures::{prelude::*, quick_main};
 
@@ -18,14 +25,17 @@ struct Indexer {
 
 impl Indexer {
     fn new(config: Config) -> Result<Self> {
-        let rpc_info = bitcoin_indexer::RpcInfo::from_url(&config.node_url)?;
+        let rpc_info = bitcoin_indexer::RpcInfo::from_url(&config.node_rpc_url)?;
         let rpc = rpc_info.to_rpc_client()?;
         let rpc = Arc::new(rpc);
         let node_starting_chainhead_height = rpc.get_block_count()? as BlockHeight;
         let network =
             bitcoin_indexer::util::bitcoin::network_from_str(&rpc.get_blockchain_info()?.chain)?;
-        let mut db =
-            db::pg::IndexerStore::new(config.db_url, node_starting_chainhead_height, network)?;
+        let mut db = db::pg::IndexerStore::new(
+            config.database_url,
+            node_starting_chainhead_height,
+            network,
+        )?;
         info!("Node chain-head at {}H", node_starting_chainhead_height);
 
         Ok(Self {
@@ -81,34 +91,19 @@ impl Indexer {
     }
 }
 
-struct Config {
-    db_url: String,
-    node_url: String,
-}
-
-impl Config {
-    fn from_env() -> Result<Self> {
-        Ok(Self {
-            db_url: env::var("DATABASE_URL")?,
-            node_url: env::var("NODE_RPC_URL")?,
-        })
-    }
-}
-
 fn run() -> Result<()> {
     dotenv::dotenv()?;
-
     env_logger::init();
-    let config = Config::from_env()?;
 
-    let opts: opts::Opts = structopt::StructOpt::from_args();
+    //TODO: [Improvement] -  Consider switching from StructOpt to Clap v3 as it is a newer library.
+    let opts: Config = StructOpt::from_args();
 
     if opts.wipe_db {
-        db::pg::IndexerStore::wipe(&env::var("DATABASE_URL")?)?;
+        db::pg::IndexerStore::wipe(&opts.database_url)?;
         return Ok(());
     }
 
-    let mut indexer = Indexer::new(config)?;
+    let mut indexer = Indexer::new(opts)?;
     indexer.run()?;
 
     Ok(())
