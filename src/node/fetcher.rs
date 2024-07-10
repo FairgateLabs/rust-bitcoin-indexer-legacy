@@ -26,13 +26,14 @@ where
 {
     pub fn new(
         rpc: Arc<R>,
-        start: Option<WithHeightAndId<R::Id>>,
+        start: BlockHeight,
         end: Option<BlockHeight>,
+        checkpoint: Option<BlockHeight>,
     ) -> Result<Self>
     where
         R: Rpc,
     {
-        let prefetcher = prefetcher::Prefetcher::new(rpc.clone(), start)?;
+        let prefetcher = prefetcher::Prefetcher::new(rpc.clone(), start, checkpoint)?;
 
         Ok(Fetcher {
             rpc,

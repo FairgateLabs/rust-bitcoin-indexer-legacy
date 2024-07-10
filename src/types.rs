@@ -7,6 +7,7 @@ pub use bitcoin::hashes::{hex::FromHex as _, Hash};
 /// Comes associated with height and hash of the block.
 ///
 /// `T` is type type of the data.
+#[derive(Debug)]
 pub struct WithHeightAndId<H, D = ()> {
     pub height: BlockHeight,
     pub id: H,

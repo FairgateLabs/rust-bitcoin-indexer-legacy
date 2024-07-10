@@ -108,7 +108,9 @@ where
     /// we were actually waiting for.
     out_of_order_items: HashMap<BlockHeight, RpcBlockWithPrevId<R>>,
 
-    cur_height: BlockHeight,
+    /// if user user HEIGHT_TO_SYNC  env then checkpoint_height gonna have Some. Otherwise None
+    checkpoint_height: Option<BlockHeight>,
+    current_height: BlockHeight,
     prev_hashes: BTreeMap<BlockHeight, R::Id>,
     workers_finish: Arc<AtomicBool>,
     thread_num: usize,
@@ -120,17 +122,28 @@ impl<R> Prefetcher<R>
 where
     R: Rpc + 'static,
 {
-    pub fn new(rpc: Arc<R>, last_block: Option<WithHeightAndId<R::Id>>) -> Result<Self> {
+    pub fn new(
+        rpc: Arc<R>,
+        height_to_sync: BlockHeight,
+        checkpoint_height: Option<BlockHeight>,
+    ) -> Result<Self> {
         let thread_num = num_cpus::get() * 2;
         let workers_finish = Arc::new(AtomicBool::new(false));
 
         let end_of_fast_sync = retry(|| rpc.get_block_count());
         let mut prev_hashes = BTreeMap::default();
-        let start = if let Some(h_and_hash) = last_block {
-            let h = h_and_hash.height;
-            prev_hashes.insert(h, h_and_hash.id);
-            info!("Starting block fetcher starting at {}H", h + 1);
-            h + 1
+
+        if let Some(id) = rpc.get_block_id_by_height(height_to_sync)? {
+            prev_hashes.insert(height_to_sync, id);
+        };
+
+        let current_height = if height_to_sync > 0 {
+            if let Some(id) = rpc.get_block_id_by_height(height_to_sync)? {
+                prev_hashes.insert(height_to_sync, id);
+            };
+
+            info!("Starting block fetcher starting at {}H", height_to_sync);
+            height_to_sync
         } else {
             info!("Starting block fetcher starting at genesis block");
             0
@@ -141,11 +154,12 @@ where
             rpc,
             thread_joins: default(),
             thread_num,
-            cur_height: start,
+            current_height,
             out_of_order_items: default(),
             workers_finish,
             prev_hashes,
             end_of_fast_sync,
+            checkpoint_height,
         };
 
         s.start_workers();
@@ -157,7 +171,7 @@ where
 
         let (tx, rx) = crossbeam_channel::bounded(self.thread_num * 64);
         self.rx = Some(rx);
-        let next_height = Arc::new(AtomicUsize::new(self.cur_height as usize));
+        let next_height = Arc::new(AtomicUsize::new(self.current_height as usize));
         assert!(self.thread_joins.is_empty());
         for _ in 0..self.thread_num {
             self.thread_joins.push({
@@ -190,19 +204,19 @@ where
     /// to a different `prev_blockhash` than we recorded. That
     /// means that the previous hash we've recorded was abandoned.
     fn track_reorgs(&mut self, block: &RpcBlockWithPrevId<R>) -> bool {
-        debug_assert_eq!(block.block.height, self.cur_height);
-        if self.cur_height > 0 {
-            if let Some(stored_prev_id) = self.prev_hashes.get(&(self.cur_height - 1)) {
+        debug_assert_eq!(block.block.height, self.current_height);
+        if self.current_height > 0 {
+            if let Some(stored_prev_id) = self.prev_hashes.get(&(self.current_height - 1)) {
                 trace!(
                     "Reorg check: last_id {} =? current {} at {}H",
                     stored_prev_id,
                     block.prev_block_id,
-                    self.cur_height - 1
+                    self.current_height - 1
                 );
                 if stored_prev_id != &block.prev_block_id {
                     return true;
                 }
-            } else if self.cur_height
+            } else if self.current_height
                 < *self
                     .prev_hashes
                     .iter()
@@ -212,7 +226,7 @@ where
             {
                 panic!(
                     "Prefetcher detected a reorg beyond acceptable depth. No hash for {}H",
-                    self.cur_height
+                    self.current_height
                 );
             } else {
                 let max_prev_hash = self
@@ -220,14 +234,19 @@ where
                     .iter()
                     .next_back()
                     .expect("At least one element");
-                if self.cur_height != *max_prev_hash.0 + 1 {
+                if self.current_height != *max_prev_hash.0 + 1 {
                     for (h, hash) in self.prev_hashes.iter() {
                         debug!("prev_hash {}H -> {}", h, hash);
                     }
-                    panic!(
-                        "No prev_hash for a new block {}H {}; max_prev_hash: {}H {}",
-                        self.cur_height, block.block.id, max_prev_hash.0, max_prev_hash.1
-                    );
+
+                    if self.checkpoint_height.is_some()
+                        && self.current_height != self.checkpoint_height.unwrap()
+                    {
+                        panic!(
+                            "No prev_hash for a new block {}H {}; max_prev_hash: {}H {}",
+                            self.current_height, block.block.id, max_prev_hash.0, max_prev_hash.1
+                        );
+                    }
                 }
             }
         }
@@ -235,8 +254,9 @@ where
             .insert(block.block.height, block.block.id.clone());
         // this is how big reorgs we're going to detect
         let window_size = 1000;
-        if self.cur_height >= window_size {
-            self.prev_hashes.remove(&(self.cur_height - window_size));
+        if self.current_height >= window_size {
+            self.prev_hashes
+                .remove(&(self.current_height - window_size));
         }
         assert!(self.prev_hashes.len() <= window_size as usize);
 
@@ -252,12 +272,12 @@ where
     fn reset_on_reorg(&mut self) {
         debug!(
             "Resetting on reorg from {}H to {}H",
-            self.cur_height,
-            self.cur_height - 1
+            self.current_height,
+            self.current_height - 1
         );
         self.stop_workers();
-        assert!(self.cur_height > 0);
-        self.cur_height -= 1;
+        assert!(self.current_height > 0);
+        self.current_height -= 1;
         self.start_workers();
     }
 }
@@ -288,10 +308,10 @@ where
 {
     type Item = RpcBlock<R>;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.end_of_fast_sync == self.cur_height {
+        if self.end_of_fast_sync == self.current_height {
             debug!(
                 "Prefetcher: end of fast sync at {}H; switching to one worker",
-                self.cur_height
+                self.current_height
             );
             self.stop_workers();
             self.thread_num = 1;
@@ -299,19 +319,19 @@ where
         }
 
         'retry_on_reorg: loop {
-            if let Some(item) = self.out_of_order_items.remove(&self.cur_height) {
+            if let Some(item) = self.out_of_order_items.remove(&self.current_height) {
                 if self.track_reorgs(&item) {
                     self.reset_on_reorg();
                     continue 'retry_on_reorg;
                 }
-                self.cur_height += 1;
+                self.current_height += 1;
                 return Some(item.block);
             }
 
             loop {
                 trace!(
                     "Waiting for the block from the workers at: {}H",
-                    self.cur_height
+                    self.current_height
                 );
                 let item = self
                     .rx
@@ -323,15 +343,15 @@ where
                     "Got the block from the workers from: {}H",
                     item.block.height
                 );
-                if item.block.height == self.cur_height {
+                if item.block.height == self.current_height {
                     if self.track_reorgs(&item) {
                         self.reset_on_reorg();
                         continue 'retry_on_reorg;
                     }
-                    self.cur_height += 1;
+                    self.current_height += 1;
                     return Some(item.block);
                 } else {
-                    assert!(item.block.height > self.cur_height);
+                    assert!(item.block.height > self.current_height);
                     self.out_of_order_items.insert(item.block.height, item);
                 }
             }

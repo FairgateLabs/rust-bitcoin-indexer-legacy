@@ -30,10 +30,7 @@ use itertools::Itertools;
 
 /// shorter `postgres` crate import names to just `pg::X`
 mod pg {
-    pub use postgres::{
-        row::Row, tls::TlsConnect, types::BorrowToSql, types::ToSql, Client, GenericClient,
-        RowIter, Transaction,
-    };
+    pub use postgres::{types::ToSql, Client, GenericClient, Transaction};
     // pub type Result<T> = std::result::Result<T, postgres::error::Error>;
 }
 
@@ -1395,7 +1392,7 @@ impl IndexerStore {
         !self.pending_reorg.is_empty()
     }
 
-    fn insert_when_at_tip(&mut self, block: crate::BlockData) -> Result<()> {
+    fn insert_when_at_tip(&mut self, block: crate::BlockData, is_checkpoint: bool) -> Result<()> {
         debug_assert!(!self.is_in_reorg());
         debug_assert!(!self.are_workers_stopped());
         debug_assert!(self.pending_reorg.is_empty());
@@ -1407,11 +1404,12 @@ impl IndexerStore {
             self.chain_block_count
         );
 
+        if !is_checkpoint {
+            assert!(block.height <= self.chain_block_count);
+        }
         // if we extend, we can't make holes
-        assert!(block.height <= self.chain_block_count);
-
         // we're not extending ... reorg start or something we already have
-        if block.height != self.chain_block_count {
+        if !is_checkpoint && block.height != self.chain_block_count {
             // workers expect state of tables not to change while they are running
             // they need to be stopped
             self.flush_batch()?;
@@ -1448,6 +1446,11 @@ impl IndexerStore {
         self.batch_txs_total += block.data.txdata.len() as u64;
         let height = block.height;
         self.batch.push(block);
+
+        if is_checkpoint {
+            self.chain_block_count = height;
+        }
+
         self.chain_block_count += 1;
 
         if self.mode.is_bulk() {
@@ -1704,11 +1707,11 @@ impl super::IndexerStore for IndexerStore {
         Self::read_db_block_hash_by_height(&mut self.connection, height)
     }
 
-    fn insert(&mut self, block: crate::BlockData) -> Result<()> {
+    fn insert(&mut self, block: crate::BlockData, is_checkpoint: bool) -> Result<()> {
         if self.is_in_reorg() {
             self.insert_when_in_reorg(block)?;
         } else {
-            self.insert_when_at_tip(block)?;
+            self.insert_when_at_tip(block, is_checkpoint)?;
         }
 
         Ok(())
