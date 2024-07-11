@@ -16,7 +16,7 @@ pub trait IndexerStore {
     fn get_hash_by_height(&mut self, height: BlockHeight) -> Result<Option<BlockHash>>;
 
     /// Insert a new block: either extending current `head` or starting a reorg
-    fn insert(&mut self, info: crate::BlockData) -> Result<()>;
+    fn insert(&mut self, info: crate::BlockData, is_checkpoint: bool) -> Result<()>;
 }
 
 pub trait MempoolStore {

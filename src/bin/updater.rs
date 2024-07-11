@@ -22,7 +22,7 @@ fn run() -> Result<()> {
     )?;
 
     let rpc = rpc_info.to_rpc_client()?;
-    let fetcher = fetcher::Fetcher::new(Arc::new(rpc), None, None)?;
+    let fetcher = fetcher::Fetcher::new(Arc::new(rpc), 0, None, None)?;
 
     for batch in &fetcher.chunks(1000) {
         let mut transaction = db.transaction()?;

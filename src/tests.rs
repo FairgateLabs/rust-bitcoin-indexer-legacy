@@ -257,7 +257,8 @@ fn prefetcher_reorg_reliability(start: Option<u8>, mut reorgs_seed: Vec<(u8, u8,
         }
     });
 
-    let mut prefetcher = prefetcher::Prefetcher::new(rpc.clone(), start).unwrap();
+    let mut prefetcher =
+        prefetcher::Prefetcher::new(rpc.clone(), start.unwrap().height, None).unwrap();
 
     loop {
         let intern_chain = rpc.get_current_chain();

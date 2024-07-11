@@ -4,6 +4,7 @@ extern crate diesel;
 
 pub mod db;
 pub mod event_source;
+pub mod indexer;
 pub mod node;
 pub mod opts;
 pub mod prelude;
